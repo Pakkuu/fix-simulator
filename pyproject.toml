@@ -1,0 +1,16 @@
+[project]
+name = "fix-log-analyzer"
+version = "0.1.0"
+description = "FIX 4.4 Protocol Log Analyzer — generates, parses, and monitors FIX session logs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "simplefix>=1.0.17",
+    "mysql-connector-python>=8.3.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+fix-generate = "src.generator:main"
+fix-parse = "src.parser:main"
