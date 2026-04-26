@@ -252,54 +252,51 @@ class RemoteLog:
         self._sftp: paramiko.SFTPClient | None = None
         self._fh:   paramiko.SFTPFile | None = None
 
-    def connect(self) -> bool:
-        """Open SSH → SFTP → remote file.  Returns True on success."""
+    def connect(self) -> None:
+        """Open SSH → SFTP → remote file.  Raises on any failure."""
+        client = paramiko.SSHClient()
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=REMOTE_HOST,
+            username="ubuntu",
+            key_filename=SSH_KEY_PATH,
+            timeout=10,
+        )
+        sftp = client.open_sftp()
+
+        # Ensure the remote directory exists (mkdir -p over SFTP)
+        remote_dir = REMOTE_LOG_PATH.rsplit("/", 1)[0]
         try:
-            client = paramiko.SSHClient()
-            client.load_system_host_keys()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(
-                hostname=REMOTE_HOST,
-                username="ubuntu",
-                key_filename=SSH_KEY_PATH,
-                timeout=10,
-            )
-            sftp = client.open_sftp()
+            sftp.stat(remote_dir)
+        except FileNotFoundError:
+            parts = remote_dir.lstrip("/").split("/")
+            path  = ""
+            for part in parts:
+                path += f"/{part}"
+                try:
+                    sftp.stat(path)
+                except FileNotFoundError:
+                    sftp.mkdir(path)
 
-            # Ensure the remote directory exists
-            remote_dir = REMOTE_LOG_PATH.rsplit("/", 1)[0]
-            try:
-                sftp.stat(remote_dir)
-            except FileNotFoundError:
-                # mkdir -p equivalent over SFTP
-                parts = remote_dir.lstrip("/").split("/")
-                path  = ""
-                for part in parts:
-                    path += f"/{part}"
-                    try:
-                        sftp.stat(path)
-                    except FileNotFoundError:
-                        sftp.mkdir(path)
+        fh = sftp.open(REMOTE_LOG_PATH, "ab")  # append-binary
+        fh.set_pipelined(True)                  # buffer writes for speed
 
-            fh = sftp.open(REMOTE_LOG_PATH, "ab")  # append-binary
-            fh.set_pipelined(True)                  # buffer writes for speed
-
-            self._ssh, self._sftp, self._fh = client, sftp, fh
-            return True
-        except Exception as exc:  # noqa: BLE001
-            print(f"\n  {YELLOW}⚠ Remote log unavailable: {exc}{R}")
-            return False
+        self._ssh, self._sftp, self._fh = client, sftp, fh
 
     def write(self, raw: bytes) -> None:
         """Append one raw FIX frame (+ newline) to the remote file."""
-        if self._fh is None:
-            return
+        assert self._fh is not None, "RemoteLog.write() called before connect()"
         try:
             self._fh.write(raw + b"\n")
         except OSError as exc:
-            print(f"\n  {YELLOW}⚠ Remote write failed: {exc} — reconnecting…{R}")
+            print(f"\n{RED}✗ Remote write failed: {exc} — attempting reconnect…{R}")
             self.close()
-            self.connect()
+            try:
+                self.connect()
+            except Exception as reconn_exc:  # noqa: BLE001
+                print(f"{RED}✗ Reconnect failed: {reconn_exc} — exiting.{R}")
+                sys.exit(1)
 
     def close(self) -> None:
         for obj in (self._fh, self._sftp, self._ssh):
@@ -325,11 +322,15 @@ def main() -> None:
     print(f"\n{B}{CYAN}FIX 4.4 SPY Session Simulator{R}  {D}{SENDER} ⟷ {TARGET}  |  Ctrl+C to stop{R}")
     print(f"  {D}{GREEN}→ outbound (us → exchange){R}   {BLUE}← inbound (exchange → us){R}")
 
-    # Connect to remote log (non-fatal if unreachable)
-    if remote_log.connect():
-        print(f"  {D}Remote log → {REMOTE_LOG_PATH}{R}")
-    else:
-        print(f"  {D}{YELLOW}Running without remote log.{R}")
+    # Remote connection is mandatory — exit if unreachable
+    try:
+        remote_log.connect()
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n{RED}✗ Cannot connect to remote log ({REMOTE_HOST}): {exc}{R}")
+        print(f"{RED}  Exiting — remote log is required.{R}")
+        sys.exit(1)
+
+    print(f"  {D}Remote log → {REMOTE_LOG_PATH}{R}")
 
     while True:
         msg, direction, type_label, summary = next_tick()
