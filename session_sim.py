@@ -102,7 +102,8 @@ def _new_order(anomaly: str | None = None) -> tuple[simplefix.FixMessage, Order]
 
     # Apply anomalies
     if anomaly == "FAT_FINGER":
-        if random.random() < 0.5:
+        # Market orders can only have qty fat fingers; price is skipped.
+        if is_mkt or random.random() < 0.5:
             qty *= 1000  # Massive quantity
         else:
             price = (price or 570.0) * (10.0 if random.random() < 0.5 else 0.1)
